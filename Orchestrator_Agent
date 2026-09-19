@@ -1,0 +1,292 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "enableStreaming": true
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        896,
+        -112
+      ],
+      "id": "f432ddf6-fa70-4308-8e85-e48c3eb2e11c",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "toolDescription": "=Nutze dieses Tool für datenbankbasierte Controlling-Fragen (ams.erp, MS SQL Server):\n- Kundenebene: Top-Kunden, Einzelaufträge, Kundenstammdaten, Umsatz (mit Zeitfilter), Anzahl Projekte, durchschnittlicher Auftragswert\n- Projektebene: Projektprofile, Leistungsbeschreibung, Auftragswert, Projektanfang/-ende, Zahlungsziel, Abrechnungsart, Informationen zum Auftrag und Projekt. \n- allgemein: Zahlen, Statistiken, zeitliche Auswertungen, Tabelleninformationen aus der Datenbank",
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/15d9db80-a3c5-4a0c-8019-8f41a2766bb4",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chatInput\": \"{{ $json.body.chatInput }}\",\n  \"sessionId\": \"{{ $json.body.sessionId }}\",\n  \"user_id\": \"{{ $json.body.user_id }}\",\n  \"user_name\": \"{{ $json.body.user_name }}\",\n  \"user_email\": \"{{ $json.body.user_email }}\",\n  \"user_groups\": {{ JSON.stringify($json.body.user_groups) }},\n  \"user_role\": \"{{ $json.body.user_role }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        112
+      ],
+      "id": "e17d4f2e-fa09-440c-8ff2-e5f71d3518d5",
+      "name": "SQL_Agent",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q2n0Vw6iEMgJQYNb",
+          "name": "Super Agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const superSteps = $input.first().json.intermediateSteps || [];\n\nlet allSteps = [...superSteps];\n\nlet sqlResult = null;\nlet fileResult = null;\n\nfor (const step of superSteps) {\n\n  const tool = step.action?.tool || '';\n  const output = step.observation || '';\n\n  // ---------- SQL ----------\n  if (tool === 'SQL_Agent') {\n\n    try {\n\n      let parsed = JSON.parse(output);\n\n      if (Array.isArray(parsed)) {\n        parsed = parsed[0];\n      }\n\n      sqlResult = parsed;\n\n      // Subworkflow intermediateSteps hinzufügen\n      if (parsed.intermediateSteps) {\n\n        for (const subStep of parsed.intermediateSteps) {\n\n          allSteps.push({\n            ...subStep,\n            parentTool: 'SQL_Agent'\n          });\n\n        }\n      }\n\n    } catch(e) {\n\n      sqlResult = {\n        response: output\n      };\n\n    }\n  }\n\n  // ---------- Dateisuche ----------\n  if (tool === 'Dateisuche') {\n\n    try {\n\n      let parsed = JSON.parse(output);\n\n      if (Array.isArray(parsed)) {\n        parsed = parsed[0];\n      }\n\n      fileResult = parsed.response ?? parsed.output ?? output;\n\n      // Subworkflow intermediateSteps hinzufügen\n      if (parsed.intermediateSteps) {\n\n        for (const subStep of parsed.intermediateSteps) {\n\n          allSteps.push({\n            ...subStep,\n            parentTool: 'Dateisuche'\n          });\n\n        }\n      }\n\n    } catch(e) {\n\n      fileResult = output;\n\n    }\n  }\n}\n\n// ---------- Final Output ----------\n\nif (sqlResult && fileResult) {\n\n  return [{\n    json: {\n      response: fileResult,\n      sql_query: sqlResult.sql_query,\n      data: sqlResult.data,\n      visualization: sqlResult.visualization,\n      intermediateSteps: allSteps\n    }\n  }];\n\n}\n\nif (sqlResult) {\n\n  return [{\n    json: {\n      ...sqlResult,\n      intermediateSteps: allSteps\n    }\n  }];\n\n}\n\nif (fileResult) {\n\n  return [{\n    json: {\n      response: fileResult,\n      intermediateSteps: allSteps\n    }\n  }];\n\n}\n\nreturn [{\n  json: {\n    response: $input.first().json.output,\n    intermediateSteps: allSteps\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -112
+      ],
+      "id": "2681e940-dce8-40a3-bc9d-a6ac2be97798",
+      "name": "Parser2"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "1588f943-50c0-43d9-b4b0-8a87ee1c8496",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -160,
+        -128
+      ],
+      "id": "54dd6cf5-6366-4f0c-bd4b-80c18170839f",
+      "name": "Webhook",
+      "webhookId": "1588f943-50c0-43d9-b4b0-8a87ee1c8496",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q2n0Vw6iEMgJQYNb",
+          "name": "Super Agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "toolDescription": "=Nutze dieses Tool, um Dateien auf dem Serverordner zu durchsuchen, insbesondere:\n- Leistungsnachweise zu einem Auftrag / einer Auftragsnummer\n- Leistungsnachweise im Zusammenhang mit einer Rechnungsstellung oder einem bestimmten Zeitraum",
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/0257d96b-7b2e-4cf2-8de3-12157d0d4722",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"chatInput\": \"{{ $json.body.chatInput }}\",\n  \"sessionId\": \"{{ $json.body.sessionId }}\",\n  \"user_groups\": {{ JSON.stringify($json.body.user_groups) }}\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequestTool",
+      "typeVersion": 4.4,
+      "position": [
+        496,
+        128
+      ],
+      "id": "51010095-3b38-4bf1-b331-66a04a0738d5",
+      "name": "Dateisuche",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q2n0Vw6iEMgJQYNb",
+          "name": "Super Agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.body.user_id + ':' + $json.body.sessionId }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.4,
+      "position": [
+        336,
+        112
+      ],
+      "id": "b289b86b-a879-4881-9a42-82584e2e951c",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Nutzeranfrage: \n{{ $json.body.chatInput }}",
+        "options": {
+          "systemMessage": "=Du bist ein intelligenter Router-Agent für ein Controlling-KI-System. Deine einzige Aufgabe ist es, die Nutzeranfrage zu analysieren und sie an den richtigen Spezialisten weiterzuleiten.\n\nDu beantwortest KEINE Fragen selbst. Du rufst IMMER eines der beiden Tools auf.\n\n## ROUTING-REGELN\n\n### Verwende das Tool \"SQL_Agent\", wenn die Anfrage betrifft:\n- Kundenebene: Top-Kunden, Einzelaufträge, Kundenstammdaten, Umsatz (mit Zeitfilter), Anzahl Projekte, durchschnittlicher Auftragswert\n- Projektebene: Projektprofile, Leistungsbeschreibung, Auftragswert, Projektanfang/-ende, Zahlungsziel, Abrechnungsart\n- allgemein: konkrete Datenbankabfragen, Zahlen, Statistiken, Auswertungen, Vergleiche aus ams.erp\n\n\n### Verwende das Tool \"Dateisuche\", wenn die Anfrage betrifft:\n- Leistungsnachweise zu einem Auftrag / einer Auftragsnummer\n- Dokumente auf dem Serverordner im Zusammenhang mit einer Rechnungsstellung oder einem bestimmten Zeitraum\n\n\n## FALLBACK-REGEL\nWenn das erste Tool antwortet mit \"Keine Informationen gefunden\", einer leeren Antwort oder oder ausdrücklich mitteilt, dass keine Daten gefunden wurden:\n→ Rufe das andere Tool mit derselben Nutzeranfrage auf.\n→ Wenn auch das zweite Tool keine Ergebnisse liefert, antworte:\n  \"Zu dieser Anfrage konnte ich weder in der Datenbank noch in den Serverdateien \n   Informationen finden.\"\n- Bei SQL_Agent-Antworten beachte das Feld \"response\".\n- Bei Dateisuche-Antworten beachte das Feld \"response\".\n\n## WICHTIGE REGELN\n- Nutze NIEMALS beide Agenten gleichzeitig ohne Grund.\n- Leite die originale Nutzeranfrage UNVERÄNDERT an das Tool weiter.\n- Füge der Anfrage NICHTS hinzu und verändere sie NICHT.\n- Gib den Tool-Output exakt so zurück wie du ihn erhalten hast — ohne ihn zu verändern oder neu zu formatieren.\n- Wenn beide Tools verwendet wurden, kombiniere die Ergebnisse sinnvoll und nenne klar, welche Information aus welcher Quelle stammt.\n- Antworte auf Deutsch.\n- Erfinde niemals Informationen.\n- Wenn kein Agent eine passende Antwort liefern kann, sage das klar\n- Für Anfragen zur Rechnungen verwende das Tool \"SQL_Agent\"\n",
+          "returnIntermediateSteps": true,
+          "enableStreaming": true
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        336,
+        -112
+      ],
+      "id": "0d44c66f-3f00-437f-a445-b224ac99dfff",
+      "name": "Orchestrator Agent"
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        192,
+        64
+      ],
+      "id": "3c53d263-bbdf-4529-acc8-2d1ad5c92690",
+      "name": "Llama 3.2 (Ollama)",
+      "credentials": {
+        "ollamaApi": {
+          "id": "xHuYe0MDGOs9IpBW",
+          "name": "Local Ollama service"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fa049c8e-64f2-4f78-9ca1-6a5765d9a5ff",
+              "leftValue": "={{ $json.body.chatInput }}",
+              "rightValue": "### Task:",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        48,
+        -128
+      ],
+      "id": "673cd427-2a77-43b4-b894-60702a851d62",
+      "name": "If"
+    }
+  ],
+  "connections": {
+    "SQL_Agent": {
+      "ai_tool": [
+        [
+          {
+            "node": "Orchestrator Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parser2": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dateisuche": {
+      "ai_tool": [
+        [
+          {
+            "node": "Orchestrator Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Orchestrator Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Orchestrator Agent": {
+      "main": [
+        [
+          {
+            "node": "Parser2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Llama 3.2 (Ollama)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Orchestrator Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Orchestrator Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1bb7fd4c2e210be147ee963abe1bddc52a690f4b408b9e26762bc7bf5c658c91"
+  }
+}
