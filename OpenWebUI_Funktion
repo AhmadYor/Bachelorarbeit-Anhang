@@ -1,0 +1,413 @@
+"""
+title: Super Agent
+author: Ahmad Yoresh
+version: 2.0.0
+"""
+
+from typing import Optional, Callable, Awaitable
+from pydantic import BaseModel, Field
+import aiohttp
+import json
+import urllib.parse
+import re
+
+from open_webui.models.groups import Groups
+
+
+class Pipe:
+    class Valves(BaseModel):
+        N8N_WEBHOOK_URL: str = Field(default="")
+        N8N_API_KEY: str = Field(default="")
+        DEFAULT_ROLE: str = Field(
+            default="",
+            description="Fallback-Rolle, wenn User in keiner gemappten Gruppe ist (leer = ablehnen)",
+        )
+        QUICKCHART_BASE_URL: str = Field(
+            default="https://quickchart.io/chart",
+            description="QuickChart-Endpoint. Self-hosted: http://<server-ip>:3400/chart",
+        )
+        ENABLE_CHART: bool = Field(
+            default=True,
+            description="Charts als QuickChart-Bild rendern.",
+        )
+        SHOW_SQL_QUERY: bool = Field(
+            default=True,
+            description="Ausgefuehrte SQL-Abfrage als Code-Block im Chat anzeigen.",
+        )
+        SHOW_TOOL_CALLS: bool = Field(
+            default=True,
+            description="Verwendete Tools (RAG_Agent, SQL_Agent) als aufklappbare Sektion anzeigen.",
+        )
+        TIMEOUT: int = Field(
+            default=180,
+            description="Request-Timeout in Sekunden.",
+        )
+
+    def __init__(self):
+        self.valves = self.Valves()
+
+    async def get_user_groups(self, user_id: str) -> list[str]:
+        try:
+            groups = await Groups.get_groups_by_member_id(user_id)
+            return [g.name for g in groups]
+        except Exception:
+            return []
+
+    def map_role(self, group_names: list[str]) -> Optional[str]:
+        for role in ("Management", "Industriesoftware", "Sekretariat", "MA", "Test"):
+            if role in group_names:
+                return role
+        return self.valves.DEFAULT_ROLE or None
+
+    @staticmethod
+    def _coerce_payload(data) -> dict:
+        if isinstance(data, str):
+            data = data.strip()
+            if data.startswith("```"):
+                data = re.sub(
+                    r"^```(?:json)?\s*|\s*```$", "", data, flags=re.MULTILINE
+                ).strip()
+            try:
+                return json.loads(data)
+            except Exception:
+                return {"response": data}
+
+        if isinstance(data, dict):
+            # n8n Structured Output Parser: {"action":"parse","response":{"output":{...}}}
+            if isinstance(data.get("response"), dict):
+                inner = data["response"]
+                if isinstance(inner.get("output"), dict):
+                    return inner["output"]
+                if isinstance(inner.get("output"), str):
+                    return Pipe._coerce_payload(inner["output"])
+            # Direct output wrapper: {"output":{...}}
+            if isinstance(data.get("output"), dict):
+                return data["output"]
+            if isinstance(data.get("output"), str):
+                return Pipe._coerce_payload(data["output"])
+            if isinstance(data.get("text"), str):
+                return Pipe._coerce_payload(data["text"])
+            return data
+
+        return {"response": str(data)}
+
+    @staticmethod
+    def _is_visualization_useful(viz) -> bool:
+        if not isinstance(viz, dict):
+            return False
+        if viz.get("type") not in ("bar", "line", "pie"):
+            return False
+        labels = viz.get("labels")
+        values = viz.get("values")
+        if not isinstance(labels, list) or not isinstance(values, list):
+            return False
+        if len(labels) != len(values) or len(values) < 2:
+            return False
+        try:
+            numeric = [float(v) for v in values if v is not None]
+        except (TypeError, ValueError):
+            return False
+        return len(numeric) >= 2
+
+    def _build_chart_url(self, viz: dict) -> str:
+        labels = [str(l) for l in viz["labels"]]
+        values = [float(v) if v is not None else 0 for v in viz["values"]]
+        title = viz.get("title") or ""
+
+        config = {
+            "type": viz["type"],
+            "data": {
+                "labels": labels,
+                "datasets": [{"label": viz.get("y_label") or "Wert", "data": values}],
+            },
+            "options": {
+                "plugins": {"title": {"display": bool(title), "text": title}},
+            },
+        }
+        if viz["type"] != "pie":
+            config["options"]["scales"] = {
+                "x": {
+                    "title": {
+                        "display": bool(viz.get("x_label")),
+                        "text": viz.get("x_label") or "",
+                    }
+                },
+                "y": {
+                    "title": {
+                        "display": bool(viz.get("y_label")),
+                        "text": viz.get("y_label") or "",
+                    },
+                    "beginAtZero": True,
+                },
+            }
+
+        encoded = urllib.parse.quote(json.dumps(config, separators=(",", ":")))
+        return f"{self.valves.QUICKCHART_BASE_URL}?c={encoded}"
+
+    @staticmethod
+    def _build_markdown_table(data) -> str:
+        if not isinstance(data, dict):
+            return ""
+        headers = data.get("headers")
+        rows = data.get("rows")
+        if not isinstance(headers, list) or not isinstance(rows, list) or not rows:
+            return ""
+
+        def cell(v):
+            if v is None:
+                return ""
+            return str(v).replace("|", "\\|").replace("\n", " ")
+
+        out = "| " + " | ".join(cell(h) for h in headers) + " |\n"
+        out += "| " + " | ".join("---" for _ in headers) + " |\n"
+        for r in rows:
+            if not isinstance(r, list):
+                continue
+            out += "| " + " | ".join(cell(c) for c in r) + " |\n"
+        return out
+
+    def _format_response(self, payload: dict) -> str:
+        parts = []
+
+        text = payload.get("response")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+
+        table = self._build_markdown_table(payload.get("data"))
+        has_chart = self.valves.ENABLE_CHART and self._is_visualization_useful(
+            payload.get("visualization")
+        )
+        has_sql = (
+            self.valves.SHOW_SQL_QUERY
+            and isinstance(payload.get("sql_query"), str)
+            and payload["sql_query"].strip()
+        )
+
+        if table or has_chart or has_sql:
+            if table:
+                parts.append(table)
+            if has_chart:
+                parts.append(
+                    f"![Chart]({self._build_chart_url(payload['visualization'])})"
+                )
+            if has_sql:
+                parts.append(f"```sql\n{payload['sql_query'].strip()}\n```")
+
+        return "\n\n".join(parts) if parts else "(n8n hat eine leere Antwort gesendet)"
+
+    async def _emit_tool_steps(self, emitter, intermediate_steps: list):
+        """Gibt jeden Tool-Schritt als Status-Event aus — erscheint im Status-Dropdown
+        sichtbar bevor die Antwort im Chat gerendert wird."""
+        if not intermediate_steps or not self.valves.SHOW_TOOL_CALLS or not emitter:
+            return
+        for i, step in enumerate(intermediate_steps, 1):
+            if not isinstance(step, dict):
+                continue
+            tool_name = step.get("action", {}).get("tool", "Unbekannt")
+            await emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "status": "complete",
+                        "description": f"Schritt {i}: {tool_name}",
+                        "done": False,
+                    },
+                }
+            )
+
+    @staticmethod
+    def _parse_stream_chunk(chunk_str: str):
+        """Returns (content: str, steps: list) extracted from a JSON string."""
+        try:
+            parsed = json.loads(chunk_str.strip())
+        except json.JSONDecodeError:
+            text = chunk_str.strip()
+            return (text, []) if text else ("", [])
+
+        if not isinstance(parsed, dict):
+            return "", []
+
+        steps = parsed.get("intermediateSteps", [])
+
+        for key in ("output", "text", "content", "response"):
+            val = parsed.get(key)
+            if isinstance(val, str) and val:
+                return val.replace("\\n", "\n"), steps
+
+        return "", steps
+
+    async def _emit_status(
+        self, emitter, status: str, message: str, done: bool = False
+    ):
+        if emitter:
+            await emitter(
+                {
+                    "type": "status",
+                    "data": {"status": status, "description": message, "done": done},
+                }
+            )
+
+    async def pipe(
+        self,
+        body: dict,
+        __user__: dict,
+        __event_emitter__: Callable[[dict], Awaitable[None]] = None,
+    ) -> str:
+        groups = await self.get_user_groups(__user__.get("id", ""))
+        role = self.map_role(groups)
+
+        if not role:
+            return (
+                "Du bist keiner berechtigten Gruppe zugeordnet. "
+                "Bitte wende dich an einen Administrator."
+            )
+
+        last_message = body["messages"][-1]["content"]
+        await self._emit_status(
+            __event_emitter__, "in_progress", "Orchestrator Agent wird aufgerufen..."
+        )
+
+        n8n_payload = {
+            "chatInput": last_message,
+            "sessionId": body.get("chat_id") or __user__.get("id"),
+            "user_id": __user__.get("id"),
+            "user_name": __user__.get("name"),
+            "user_email": __user__.get("email"),
+            "user_groups": groups,
+            "user_role": role,
+        }
+
+        headers = {
+            "Authorization": self.valves.N8N_API_KEY,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.valves.TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    self.valves.N8N_WEBHOOK_URL,
+                    json=n8n_payload,
+                    headers=headers,
+                ) as response:
+
+                    if response.status != 200:
+                        error_text = await response.text()
+                        msg = (
+                            f"n8n Status {response.status}\n\n"
+                            f"Response: {error_text[:1000] or '(leer)'}"
+                        )
+                        await self._emit_status(
+                            __event_emitter__,
+                            "error",
+                            f"n8n Fehler {response.status}",
+                            True,
+                        )
+                        return msg
+
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    is_streaming = "text/event-stream" in content_type or (
+                        "application/json" in content_type
+                        and response.headers.get("Transfer-Encoding") == "chunked"
+                        and "no-cache"
+                        in response.headers.get("Cache-Control", "").lower()
+                    )
+
+                    # ----------------------------------------------------------------
+                    # Streaming path (n8n sendet SSE oder chunked JSON)
+                    # ----------------------------------------------------------------
+                    if is_streaming:
+                        full_response = ""
+                        intermediate_steps = []
+                        buffer = ""
+
+                        async for chunk_bytes in response.content.iter_any():
+                            if not chunk_bytes:
+                                continue
+                            buffer += chunk_bytes.decode("utf-8", errors="ignore")
+
+                            while "\n" in buffer:
+                                line, buffer = buffer.split("\n", 1)
+                                line = line.rstrip("\r")
+
+                                if not line or line.startswith(":"):
+                                    continue
+
+                                # SSE-Zeile: "data: {...}" oder "[DONE]"
+                                data_str = (
+                                    line[6:].strip()
+                                    if line.startswith("data: ")
+                                    else line.strip()
+                                )
+
+                                if data_str == "[DONE]":
+                                    break
+                                if not data_str:
+                                    continue
+
+                                content, steps = self._parse_stream_chunk(data_str)
+                                intermediate_steps.extend(steps)
+                                if content:
+                                    full_response += content
+                                    if __event_emitter__:
+                                        await __event_emitter__(
+                                            {
+                                                "type": "chat:message:delta",
+                                                "data": {
+                                                    "role": "assistant",
+                                                    "content": content,
+                                                },
+                                            }
+                                        )
+
+                        await self._emit_tool_steps(
+                            __event_emitter__, intermediate_steps
+                        )
+                        await self._emit_status(
+                            __event_emitter__, "complete", "Fertig", True
+                        )
+                        return full_response or "(n8n hat eine leere Antwort gesendet)"
+
+                    # ----------------------------------------------------------------
+                    # Non-Streaming path (Standard-JSON-Antwort)
+                    # ----------------------------------------------------------------
+                    else:
+                        try:
+                            data = await response.json(content_type=None)
+                        except Exception:
+                            text = (await response.text()).strip()
+                            await self._emit_status(
+                                __event_emitter__, "complete", "Fertig", True
+                            )
+                            return text if text else "(n8n hat leere Antwort gesendet)"
+
+                        # intermediateSteps aus Array- oder Dict-Antwort extrahieren
+                        intermediate_steps = []
+                        if isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict):
+                                    intermediate_steps.extend(
+                                        item.get("intermediateSteps", [])
+                                    )
+                        elif isinstance(data, dict):
+                            intermediate_steps = data.get("intermediateSteps", [])
+
+                        payload_parsed = self._coerce_payload(data)
+                        result = self._format_response(payload_parsed)
+
+                        await self._emit_tool_steps(
+                            __event_emitter__, intermediate_steps
+                        )
+                        await self._emit_status(
+                            __event_emitter__, "complete", "Fertig", True
+                        )
+                        return result
+
+        except aiohttp.ClientError as e:
+            await self._emit_status(
+                __event_emitter__, "error", f"Verbindungsfehler: {e}", True
+            )
+            return f"Verbindungsfehler: {e}"
+        except Exception as e:
+            await self._emit_status(__event_emitter__, "error", f"Fehler: {e}", True)
+            return f"Fehler: {e}"
