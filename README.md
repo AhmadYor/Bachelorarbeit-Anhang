@@ -1,6 +1,6 @@
 # Bachelorarbeit-Anhang
 
-Dieses Repository enthält die exportierten n8n-Workflows sowie das Docker-Compose-Setup zur Bachelorarbeit.
+Dieses Repository enthält die exportierten n8n-Workflows, das Docker-Compose-Setup sowie  die Open-WebUI-Funktion zur Bachelorarbeit.
 
 ## Inhalt
 
