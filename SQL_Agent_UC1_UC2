@@ -1,0 +1,853 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fa049c8e-64f2-4f78-9ca1-6a5765d9a5ff",
+              "leftValue": "={{ $json.body.chatInput }}",
+              "rightValue": "### Task:",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        368,
+        2016
+      ],
+      "id": "fa895f5c-3089-4958-abb8-9a4496211bff",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Nutzeranfrage: \n {{ $('Webhook').item.json.body.chatInput }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=You are a controlling assistant and an expert in Microsoft SQL Server (T-SQL). \n\nYou translate questions into T-SQL for Microsoft SQL Server.\n\n## Rules\n\n- `SELECT` only. Never INSERT, UPDATE, DELETE, DROP, ALTER, EXEC, MERGE.\n- Use only tables and columns defined in the schema below. Never invent them.\n- If the schema does not cover the question, say so. Do not guess.\n- Do NOT use SELECT *.\n- Write date literals as `'YYYYMMDD'`, e.g. `'20250101'`.\n- Answer in German and use German column aliases in the result set (e.g. `AS [Umsatz]`, `AS [Kunde]`).\n- Always use `TOP`, at most 20 rows.\n- Counting: Views are row-level: one row per order, invoice, or position. Count rows with COUNT(*) only when the user asks for rows (invoices, orders, deliveries).\nFor entities that repeat across rows (projects, customers, articles, suppliers),\nuse COUNT(DISTINCT TRIM([<key>])).\n- Never use TOP for name lookups. Search both [ShortName] and [FullCompanyName].\n- **Exactly ONE SQL statement per answer — never return multiple standalone SELECT queries**, even if the question asks for several sub-answers. \n- You can use UNION ALL, conditional aggregation in one `GROUP BY`, ROW_NUMBER() for rankings , CTEs or sub-selects instead of separate queries.\n- When listing orders or projects, include [OrderDescription] next to [OrderNumber].\n\n- **Umsatz (revenue)** = `SUM(SalesVolume)` using the Umsatz block below. The underlying rule: down payment invoices (`A`) count only as long as no final invoice (`S`) exists for the same order. Once a final invoice exists, it replaces the down payments — they are not added on top. Never aggregate `Invoices_1` directly, otherwise the down payment and the final invoice both carry the full amount and revenue comes out too high.\n\n-Include down-payment invoices (invoice_type = 'A') only if no final invoice (invoice_type = 'S') exists for the same order.\nIf a final invoice exists, do not add the related down-payment invoices.\nFor uninvoiced orders, return only records where OrderValue - SUM(InvoiceValue) > 0.\n\n- **The order is the working level.** `ProjectNumber` is not a separate entity; it holds the order number of the project's main order. \"Projekt 2200856\" means order 2200856 — one row from `OrderHeader_1`, no grouping. Exception: when ranking or totaling projects by value, group by [ProjectNumber] and use SUM([OrderValue]) over all its orders — never group by [OrderDescription], which splits one project into several rows. 111 of 4,897 projects have more than one order, and those are the large ones.\n\n- **Auftragswert** = `OrderHeader_1.OrderValue`. Not the same as Umsatz:\n    order value is what was ordered, Umsatz is what was invoiced.\n- Use invoice_date for revenue periods.\n- All amounts are in company currency (EUR).\n- Always present average values as a table. For  \"durchschnittlicher Auftragswert je Kunde\" include at least these columns: Kunde, Anzahl Aufträge, Ø Auftragswert\n\n### Revenue block — prepend to every revenue question\n\n```sql\nWITH Umsatz AS (\n    SELECT I.*,\n           [InvoiceValue] = I.[order_value_amount],\n           [SalesVolume]  = CASE WHEN TRIM(I.[invoice_type])='A'\n                                 THEN 0 ELSE I.[order_value_amount] END\n    FROM   [MAR_AMS_Interface_1].[Invoices_1] I\n    WHERE  TRIM(I.[invoice_type]) <> 'A'\n       OR  NOT EXISTS (SELECT 1 FROM [MAR_AMS_Interface_1].[Invoices_1] S\n                       WHERE S.[sales_order_number] = I.[sales_order_number]\n                         AND TRIM(S.[invoice_type]) = 'S')\n)\n```\n\n## OUTPUT RULES\n- Respond EXCLUSIVELY with a valid JSON object using the Structured Output Parser tool.\n\n## VISUALIZATION\nbar=category comparison | line=time trend | pie=parts of whole (max 10) | table=tabular/single value | none=no chart needed\n\n## Schema\n\n### `[MAR_AMS_Interface_1].[Invoices_1]`\nInvoices, one row per invoice. Printed and non-voided only, net of credit notes.\n\nColumns:\n`invoice_number` (key),\n`invoice_date`, \n`posting_date`,\n`customer_number`,\n`sales_order_number`, \n`project_number`, \n`invoice_description`,\n`order_value_amount`,\n`order_value_currency_amount`,\n`net_currency_amount`,\n`gross_currency_amount`,\n`payment_terms_code`,\n`currency_code`, `invoice_type`,\n`responsible_employee_id`, \n`project_manager_id`\n\n| Column | Note |\n|---|---|\n| `order_value_amount` | Revenue, net, company currency. Use this for every revenue question |\n| `invoice_date` | Use this for revenue periods, not `posting_date` |\n| `invoice_type` | Code: `A`=down payment, `T`=partial final, `S`=final, `R`=invoice |\n| `payment_terms_code` | Payment terms of the invoice (code) |\n| `payment_terms_text_1` | Payment terms in plain text, as printed on the invoice |\n| `billing_indicator` | Abrechnungsart (code `L`, `A`, `O`) — meaning unknown |\n\n\n### `[MAR_AMS_Interface_1].[OrderHeader_1]`\nSales orders, one row per order.\n\nColumns: `OrderNumber` (key), `OrderDescription`, `ProjectNumber`, `CustomerNumber`,\n`CustomerPurchaseOrderNumber`, `CustomerPurchaseOrderDate`, `QuoteNumber`,\n`OrderValue`, \n`CalculatedOrderValue`,\n`OrderValueForeignCurrency`,\n`CurrencyCode`, `OrderStatus`, `OrderType`, `ProjectStartDate`,\n`ProjectEndDate`, `OrderConfirmationDate`, `ShippingDate`, `ProjectManager`,\n`ResponsibleEmployee`, `BusinessUnit`, `CostCenter`, `CreatedDate`,\n`ProductGroup`\n\n| Column | Note |\n|---|---|\n| `ProjectNumber` | Order number of the project's main order — see rule 12 |\n| `OrderValue` | What was ordered, not what was invoiced |\n| `OrderDescription` | Scope of work |\n| `OrderStatus`, `OrderType` | Codes, no lookup table available |\n| `BusinessUnit` | Code, resolve via `BusinessUnit_1` |\n\n### `[MAR_AMS_Interface_1].[CustomerMaster_1]`\nCustomer master data, one row per customer.\n\nColumns: `CustomerNumber` (key), `FullCompanyName`, `ShortName`, `FullAddress`,\n`CountryCode`, `LanguageCode`, `CurrencyCode`,\n`SalesRepresentative`, `EmailAddress`, `PhoneNumber`, `Website`\n\n| Column | Note |\n|---|---|\n| `FullCompanyName` | Use for display in results |\n| `ShortName` | Match code — use for fuzzy customer lookup by name |\n\n### `[MAR_AMS_Interface_1].[PaymentReceipt_1]`\nIncoming payments, aggregated per invoice.\n\nColumns: `InvoiceNumber` (key), `PaymentMethod`, `PaymentAmount`, `PaymentDate`\n\n| Column | Note |\n|---|---|\n| `PaymentMethod` | `ZE` = payment received, otherwise `-` |\n| `PaymentAmount` | Different value basis than `order_value_amount` — see rule 15 |\n\n### `[MAR_AMS_Interface_1].[BusinessUnit_1]`\nBusiness units, one row per unit. Lookup table for the `BusinessUnit` code\nin `OrderHeader_1`.\n\n`BusinessUnit` (key), `description`, `cost_center`, `order_type`,\n`billing_indicator`, `valid_from_date`, `valid_until_date`\n\n| Column | Note |\n|---|---|\n| `BusinessUnit` | Code, joins to `OrderHeader_1.BusinessUnit` |\n| `description` | Plain text name of the business unit — use this for display |\n\n### German business terms\n\n| Term used by the user | Where it comes from |\n|---|---|\n| Umsatz | `SUM(Invoices_1.order_value_amount)` |\n| Auftragswert | `OrderHeader_1.OrderValue` |\n| Auftrag | `OrderHeader_1` |\n| Rechnung | `Invoices_1` |\n| Projekt | `OrderHeader_1` grouped by `ProjectNumber` |\n| Kunde | `CustomerMaster_1.FullCompanyName` |\n| Leistungsbeschreibung | `OrderHeader_1.OrderDescription` |\n| Projektleiter | `OrderHeader_1.ProjectManager` |\n| Sachbearbeiter | `OrderHeader_1.ResponsibleEmployee` |\n| Geschäftsbereich | `OrderHeader_1.BusinessUnit` |\n| Zahlungsziel | `Invoices_1.payment_terms_code` + lookup |\n| Abrechnungsart | `Invoices_1.billing_indicator` |\n| Zahlungseingang | `PaymentReceipt_1` |\n| Projektbeginn / Projektende | `ProjectStartDate` / `ProjectEndDate` |\n| noch nicht abgerechnet | `OrderValue` minus `SUM(InvoiceValue)` |\n\n### Relationships\n\n| From | To |\n|---|---|\n| `Invoices_1.customer_number` | `CustomerMaster_1.CustomerNumber` |\n| `Invoices_1.sales_order_number` | `OrderHeader_1.OrderNumber` |\n| `Invoices_1.invoice_number` | `PaymentReceipt_1.InvoiceNumber` |\n| `OrderHeader_1.CustomerNumber` | `CustomerMaster_1.CustomerNumber` |\n| `OrderHeader_1.OrderNumber` | `KAVD000.AUFTRAG` |\n| `OrderHeader_1.ProjectNumber` | `OrderHeader_1.OrderNumber` of the main order |\n\n\n```\n\n## Examples\n\n**Q: Wer waren die Top-5-Kunden nach Umsatz im Jahr 2024?**\n```sql\nWITH Umsatz AS (\n    SELECT I.*,\n           [SalesVolume] = CASE WHEN TRIM(I.[invoice_type])='A'\n                                THEN 0 ELSE I.[order_value_amount] END\n    FROM   [MAR_AMS_Interface_1].[Invoices_1] I\n    WHERE  TRIM(I.[invoice_type]) <> 'A'\n       OR  NOT EXISTS (SELECT 1 FROM [MAR_AMS_Interface_1].[Invoices_1] S\n                       WHERE S.[sales_order_number] = I.[sales_order_number]\n                         AND TRIM(S.[invoice_type]) = 'S')\n)\nSELECT TOP 5\n    TRIM(C.[FullCompanyName]) AS [Kunde],\n    SUM(U.[SalesVolume])      AS [Umsatz]\nFROM      [Umsatz] U\nLEFT JOIN [MAR_AMS_Interface_1].[CustomerMaster_1] C\n       ON U.[customer_number] = C.[CustomerNumber]\nWHERE U.[invoice_date] >= '20240101' AND U.[invoice_date] < '20250101'\nGROUP BY C.[FullCompanyName]\nORDER BY SUM(U.[SalesVolume]) DESC;\n\n```\n\n**Q: Zeige mir die wichtigsten Informationen zum Auftrag 2200856.**\n```sql\nSELECT\n    TRIM(O.[OrderNumber])      AS [Auftrag],\n    TRIM(O.[ProjectNumber])    AS [Projekt],\n    TRIM(C.[FullCompanyName])  AS [Kunde],\n    TRIM(O.[OrderDescription]) AS [Leistungsbeschreibung],\n    O.[OrderValue]             AS [Auftragswert],\n    O.[ProjectStartDate]       AS [Beginn],\n    O.[ProjectEndDate]         AS [GeplantesEnde],\n    TRIM(O.[ProjectManager])   AS [Projektleiter],\n    TRIM(O.[OrderStatus])      AS [StatusCode],\n    TRIM(B.[description])      AS [Geschaeftsbereich],\n    Z.[ZahlungszielCode],\n    Z.[Zahlungsziel],\n    Z.[Skonto],\n    Z.[Zahlungsziel2],\n    R.[Rechnungsarten],\n    R.[AnzahlRechnungen]\nFROM      [MAR_AMS_Interface_1].[OrderHeader_1] O\nLEFT JOIN [MAR_AMS_Interface_1].[CustomerMaster_1] C\n       ON O.[CustomerNumber] = C.[CustomerNumber]\nLEFT JOIN [MAR_AMS_Interface_1].[BusinessUnit_1] B\n       ON O.[BusinessUnit] = B.[BusinessUnit]\nOUTER APPLY (\n    -- Zahlungsziel der zuletzt gestellten Rechnung\n    SELECT TOP 1\n        [ZahlungszielCode] = TRIM(I.[payment_terms_code]),\n        [Zahlungsziel]     = TRIM(I.[payment_terms_text_1]),\n        [Skonto]           = TRIM(I.[payment_terms_text_2]),\n        [Zahlungsziel2]\t\t= TRIM(I.[payment_terms_text_3])\n    FROM  [MAR_AMS_Interface_1].[Invoices_1] I\n    WHERE I.[sales_order_number] = O.[OrderNumber]\n    ORDER BY I.[invoice_date] DESC\n) Z\nOUTER APPLY (\n    -- welche Rechnungsarten kamen vor\n    SELECT\n        [Rechnungsarten]   = STRING_AGG(TRIM(I.[invoice_type]), ', '),\n        [AnzahlRechnungen] = COUNT(*)\n    FROM  [MAR_AMS_Interface_1].[Invoices_1] I\n    WHERE I.[sales_order_number] = O.[OrderNumber]\n) R\nWHERE O.[OrderNumber] = '2200740';\n```\n\n**Q: Bitte 5 Projekte aus 2023 und 5 aus 2024, sortiert nach Auftragswert.**\n```sql\nWITH Projekte AS (\n    SELECT\n        [Jahr]          = CASE WHEN O.[ProjectStartDate] < '20240101' THEN '2023' ELSE '2024' END,\n        [Projekt]       = TRIM(O.[ProjectNumber]),\n        [Projekttitel]  = MAX(TRIM(P.[OrderDescription])),\n        [Auftragswert]  = SUM(O.[OrderValue])\n    FROM      [MAR_AMS_Interface_1].[OrderHeader_1] O\n    LEFT JOIN [MAR_AMS_Interface_1].[OrderHeader_1] P     -- Projekttitel aus dem Hauptauftrag\n           ON P.[OrderNumber] = O.[ProjectNumber]\n    WHERE     O.[ProjectStartDate] >= '20230101'\n    AND       O.[ProjectStartDate] <  '20250101'\n    GROUP BY  CASE WHEN O.[ProjectStartDate] < '20240101' THEN '2023' ELSE '2024' END,\n              TRIM(O.[ProjectNumber])\n)\nSELECT   [Jahr], [Projekt], [Projekttitel], [Auftragswert]\nFROM     ( SELECT *, [rn] = ROW_NUMBER() OVER (PARTITION BY [Jahr] ORDER BY [Auftragswert] DESC)\n           FROM [Projekte] ) R\nWHERE    [rn] <= 5\nORDER BY [Jahr], [Auftragswert] DESC;\n```\n\n**Q: Was waren die Top 5 größten Projekte der LEONI AG in den Jahren 2023 und 2024?\nStelle die Auftragswerte für 2023 und 2024 gegenüber.**\n\n```sql\nSELECT TOP 5\n    [Projekt]           = TRIM(O.[ProjectNumber]),\n    [Projekttitel]      = MAX(TRIM(P.[OrderDescription])),\n    [Auftragswert_2023] = SUM(CASE WHEN O.[ProjectStartDate] < '20240101'\n                                   THEN O.[OrderValue] ELSE 0 END),\n    [Auftragswert_2024] = SUM(CASE WHEN O.[ProjectStartDate] >= '20240101'\n                                   THEN O.[OrderValue] ELSE 0 END)\nFROM       [MAR_AMS_Interface_1].[OrderHeader_1] O\nLEFT JOIN  [MAR_AMS_Interface_1].[OrderHeader_1] P      -- Projekttitel aus dem Hauptauftrag\n        ON P.[OrderNumber] = O.[ProjectNumber]\nINNER JOIN [MAR_AMS_Interface_1].[CustomerMaster_1] C\n        ON C.[CustomerNumber] = O.[CustomerNumber]\nWHERE     (C.[FullCompanyName] LIKE '%LEONI AG%' OR C.[ShortName] LIKE '%LEONI AG%')\nAND        O.[ProjectStartDate] >= '20230101'\nAND        O.[ProjectStartDate] <  '20250101'\nGROUP BY   TRIM(O.[ProjectNumber])\nORDER BY   SUM(O.[OrderValue]) DESC;\n```\n\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        592,
+        2032
+      ],
+      "id": "6535612a-d26a-457e-9794-457bc7507123",
+      "name": "AI Agent",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueErrorOutput",
+      "notes": "={{ $('Webhook').item.json.body.chatInput }}\n\n={{$('When chat message received').item.json.chatInput\n}} "
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        544,
+        2240
+      ],
+      "id": "32316a08-042d-4256-9a6e-dcf1113881e4",
+      "name": "Azure OpenAI Chat Model",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "kPePnZ3coz99N73c",
+          "name": "Azure Open AI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"sql_query\": {\n      \"type\": \"string\"\n    },\n    \"response\": {\n      \"type\": \"string\"\n    },\n    \"data\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"headers\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"string\"\n          }\n        },\n        \"rows\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"string\"\n            }\n          }\n        }\n      }\n    },\n    \"visualization\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"type\": {\n          \"type\": \"string\",\n          \"enum\": [\"bar\", \"line\", \"pie\", \"table\", \"none\"]\n        },\n        \"title\": {\n          \"type\": \"string\"\n        },\n        \"x_label\": {\n          \"type\": \"string\"\n        },\n        \"y_label\": {\n          \"type\": \"string\"\n        },\n        \"labels\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"string\"\n          }\n        },\n        \"values\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"number\"\n          }\n        }\n      }\n    }\n  },\n  \"required\": [\n    \"sql_query\",\n    \"response\"\n  ]\n}",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        768,
+        2240
+      ],
+      "id": "2791f3c2-19aa-4f5f-8631-ba42afc08812",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        864,
+        2384
+      ],
+      "id": "98b3bd29-5d72-41e7-bd33-ae6649286c08",
+      "name": "Azure OpenAI Chat Model1",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "kPePnZ3coz99N73c",
+          "name": "Azure Open AI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baut die SQL-Anfrage fuer den naechsten Ausfuehrungsversuch.\n// Lauf 0  -> Input kommt vom \"AI Agent\"\n// Lauf 1+ -> Input kommt vom \"SQL Repair Agent\" (Schleife)\n// Mode: Run Once for All Items\n\nconst MAX_ATTEMPTS = 4;          // <- hier die maximale Anzahl SQL-Versuche einstellen\nconst attempt = $runIndex + 1;   // $runIndex zaehlt die Laeufe dieses Nodes = Versuchszaehler\n\nconst input = $input.first()?.json ?? {};\nconst payload = (input.output && typeof input.output === 'object') ? input.output : input;\n\nlet sql = String(payload.sql_query ?? '');\n\n// Markdown-Fences und Whitespace entfernen\nsql = sql.replace(/^\\s*```[a-z]*\\s*/i, '').replace(/```\\s*$/, '').trim();\n\n// Fuehrende Kommentare ueberspringen, um das erste Schluesselwort zu finden\nconst head = sql.replace(/^(?:\\s|--[^\\n]*\\n|\\/\\*[\\s\\S]*?\\*\\/)+/, '').toLowerCase();\nconst startsReadOnly = head.startsWith('select') || head.startsWith('with');\nconst multiStatement = sql.replace(/;\\s*$/, '').includes(';');\n\nlet blockReason = null;\nif (!sql) {\n  blockReason = 'Der Agent hat keine SQL-Abfrage geliefert.';\n} else if (!startsReadOnly) {\n  blockReason = 'Nur lesende Abfragen (SELECT / WITH) sind erlaubt.';\n} else if (multiStatement) {\n  blockReason = 'Mehrere SQL-Statements in einer Abfrage sind nicht erlaubt.';\n}\n\nreturn [{\n  json: {\n    sql_query: sql,\n    attempt: attempt,\n    max_attempts: MAX_ATTEMPTS,\n    blocked: blockReason !== null,\n    block_reason: blockReason,\n    fix_note: payload.fix_note ?? ''\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1136,
+        1888
+      ],
+      "id": "37d6d882-0f9d-443d-9fea-d9c77c269f36",
+      "name": "Build SQL Request"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "0a1f7c3e-2222-4b21-8c02-1d2c8b0f0002",
+              "leftValue": "={{ $json.blocked }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1536,
+        2112
+      ],
+      "id": "80718afa-9da4-4536-96ff-479e460c7c5d",
+      "name": "Query Blocked?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b1f4c9a0-1111-4a11-9f01-3c1a7e5d0001",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "DROP",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-2222-4a22-9f02-3c1a7e5d0002",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "DELETE",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-3333-4a33-9f03-3c1a7e5d0003",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "UPDATE",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-4444-4a44-9f04-3c1a7e5d0004",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "INSERT",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-5555-4a55-9f05-3c1a7e5d0005",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "ALTER",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-6666-4a66-9f06-3c1a7e5d0006",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "TRUNCATE",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-7777-4a77-9f07-3c1a7e5d0007",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "EXEC",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            },
+            {
+              "id": "b1f4c9a0-8888-4a88-9f08-3c1a7e5d0008",
+              "leftValue": "={{ $json.sql_query }}",
+              "rightValue": "MERGE",
+              "operator": {
+                "type": "string",
+                "operation": "notContains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1728,
+        2128
+      ],
+      "id": "098505f9-91eb-497a-9e63-86b09a0e8555",
+      "name": "SQL Guardrail"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{ $json.sql_query }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.microsoftSql",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        2128
+      ],
+      "id": "3da9f7ab-d6ed-46e5-81ba-69871ebae393",
+      "name": "Microsoft SQL",
+      "credentials": {
+        "microsoftSql": {
+          "id": "sfYnIDqR61iDPl7N",
+          "name": "Controlling"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sammelt Fehlermeldung + alle bisherigen Versuche und baut daraus den Prompt\n// fuer den \"SQL Repair Agent\".\n// Laeuft genau einmal pro fehlgeschlagenem SQL-Versuch -> $runIndex = Versuchsindex.\n// Mode: Run Once for All Items\n\nconst attemptIdx = $runIndex;      // 0 = erster Fehlschlag\nconst attempt = attemptIdx + 1;\n\nfunction normalizeError(j) {\n  const e = j?.error ?? j?.message ?? j;\n  if (!e) return '';\n  if (typeof e === 'string') return e;\n  return e.message || e.description || JSON.stringify(e);\n}\n\nfunction reqOfRun(r) {\n  try { return $('Build SQL Request').all(0, r)[0].json; } catch (e) { return null; }\n}\n\nfunction errOfRun(r) {\n  // Branch 1 des SQL-Nodes = Error-Output\n  try { return normalizeError($('Microsoft SQL').all(1, r)[0].json); } catch (e) { return ''; }\n}\n\nconst req = reqOfRun(attemptIdx) || {};\nconst MAX_ATTEMPTS = req.max_attempts || 4;\n\nconst history = [];\nfor (let r = 0; r <= attemptIdx; r++) {\n  const rq = reqOfRun(r);\n  history.push({\n    attempt: r + 1,\n    sql: rq ? rq.sql_query : '',\n    error: errOfRun(r)\n  });\n}\n\n// Aktueller Fehler bevorzugt direkt aus dem Input dieses Nodes\nconst current = normalizeError($input.first()?.json) || history[attemptIdx].error;\nhistory[attemptIdx].error = current;\n\n// Urspruengliche Nutzerfrage (Webhook oder Chat-Trigger)\nlet question = '';\ntry { question = $('Webhook').first().json.body.chatInput; } catch (e) { /* kein Webhook-Lauf */ }\nif (!question) {\n  try { question = $('When chat message received').first().json.chatInput; } catch (e) { /* kein Chat-Lauf */ }\n}\n\nconst blocks = history.map(h =>\n  '### Versuch ' + h.attempt + '\\n```sql\\n' + h.sql + '\\n```\\nFehlermeldung:\\n' + (h.error || '(unbekannt)')\n).join('\\n\\n');\n\nconst repairPrompt = [\n  'Die folgende T-SQL-Abfrage ist auf dem Microsoft SQL Server fehlgeschlagen.',\n  '',\n  '## Urspruengliche Nutzerfrage',\n  question || '(nicht verfuegbar)',\n  '',\n  '## Bisherige Versuche',\n  blocks,\n  '',\n  'Das war Versuch ' + attempt + ' von ' + MAX_ATTEMPTS + '.',\n  'Analysiere die Fehlermeldung und liefere EINE korrigierte, lauffaehige T-SQL-SELECT-Abfrage.',\n  'Wiederhole keinen der oben gezeigten Fehler.'\n].join('\\n');\n\nreturn [{\n  json: {\n    attempt: attempt,\n    max_attempts: MAX_ATTEMPTS,\n    can_retry: attempt < MAX_ATTEMPTS,\n    sql_query: req.sql_query || '',\n    error_message: current,\n    attempts: history,\n    repair_prompt: repairPrompt\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        2336
+      ],
+      "id": "c80da169-5cd7-4fd6-ad18-4c06385c83de",
+      "name": "Handle SQL Error"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e4d70502-5555-4e54-bf05-405fbe200005",
+              "leftValue": "={{ $json.can_retry }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1536,
+        2336
+      ],
+      "id": "c7e74771-1b13-4489-bc22-5e5274b07d7c",
+      "name": "Retry Possible?"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.repair_prompt }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=You are a T-SQL repair specialist for Microsoft SQL Server.\n\nA SELECT query that was generated for a German controlling/BI question failed. You receive the original user question, every previous attempt and the exact error message from the SQL Server. Return ONE corrected T-SQL SELECT query.\n\n## Rules\n- `SELECT` only. Never INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, EXEC, MERGE. Never more than one statement, no trailing second statement after `;`.\n- Do NOT use `SELECT *`.\n- Use only the tables and columns from the schema below. If the error says an object or column is invalid, replace it with the correct name from the schema — never invent names.\n- Always fully qualify tables as `[MAR_AMS_Interface_1].[<Table>]`.\n- Date literals as `'YYYYMMDD'`, e.g. `'20250101'`.\n- Keep the German column aliases, e.g. `AS [Umsatz]`, `AS [Kunde]`.\n- Keep the business logic of the original query intact — only fix what caused the error. Do not silently change the meaning of the question.\n- Umsatz = `SUM(Invoices_1.order_value_amount)`; down payments (`invoice_type = 'A'`) count only while no final invoice (`'S'`) exists for the same order.\n- Auftragswert = `OrderHeader_1.OrderValue`. Projekt = `OrderHeader_1` grouped by `ProjectNumber`.\n- If the error is clearly a connection, timeout, login or network problem and NOT a SQL problem, return the previous query completely unchanged.\n\n## Typical MSSQL errors and how to fix them\n- `Invalid column name 'X'` -> the column does not exist; pick the correct one from the schema.\n- `Invalid object name 'X'` -> wrong table or schema prefix; use `[MAR_AMS_Interface_1].[<Table>]`.\n- `Column 'X' is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause` -> add the column to `GROUP BY` or wrap it in an aggregate.\n- `Incorrect syntax near 'X'` -> fix the syntax; watch for stray parentheses, `TOP` without `ORDER BY`, misplaced commas, wrong alias quoting.\n- `Ambiguous column name 'X'` -> qualify the column with its table alias.\n- `Conversion failed when converting ...` / `Operand type clash` -> cast explicitly with `TRY_CONVERT` / `CAST`, or fix the literal format.\n- `Arithmetic overflow` or `Divide by zero` -> `CAST(... AS DECIMAL(18,2))` and `NULLIF(divisor, 0)`.\n- `Cannot perform an aggregate function on an expression containing an aggregate` -> restructure with a subquery or CTE.\n- `The multi-part identifier 'X' could not be bound` -> the alias is not in scope; add the missing JOIN or correct the alias.\n- `ORDER BY items must appear in the select list if SELECT DISTINCT is specified` -> add the column or drop `DISTINCT`.\n\n## Schema — database schema `[MAR_AMS_Interface_1]`\n\n`Invoices_1` (one row per invoice): `invoice_number` (key), `invoice_date`, `posting_date`, `customer_number`, `sales_order_number`, `project_number`, `invoice_description`, `order_value_amount`, `order_value_currency_amount`, `net_currency_amount`, `gross_currency_amount`, `payment_terms_code`, `currency_code`, `invoice_type`, `responsible_employee_id`, `project_manager_id`\n- `order_value_amount` = revenue, net, company currency (EUR)\n- `invoice_date` = use this for revenue periods, not `posting_date`\n- `invoice_type`: `A` = down payment, `T` = partial final, `S` = final, `R` = invoice\n\n`OrderHeader_1` (one row per order): `OrderNumber` (key), `OrderDescription`, `ProjectNumber`, `CustomerNumber`, `CustomerPurchaseOrderNumber`, `CustomerPurchaseOrderDate`, `QuoteNumber`, `OrderValue`, `CalculatedOrderValue`, `OrderValueForeignCurrency`, `CurrencyCode`, `OrderStatus`, `OrderType`, `ProjectStartDate`, `ProjectEndDate`, `OrderConfirmationDate`, `ShippingDate`, `ProjectManager`, `ResponsibleEmployee`, `BusinessUnit`, `CostCenter`, `CreatedDate`, `ProductGroup`\n\n`CustomerMaster_1` (one row per customer): `CustomerNumber` (key), `FullCompanyName`, `ShortName`, `FullAddress`, `CountryCode`, `LanguageCode`, `CurrencyCode`, `SalesRepresentative`, `EmailAddress`, `PhoneNumber`, `Website`\n\n`PaymentReceipt_1` (payments per invoice): `InvoiceNumber` (key), `PaymentMethod`, `PaymentAmount`, `PaymentDate`\n\n`BusinessUnit_1` (lookup): `BusinessUnit` (key), `description`, `cost_center`, `order_type`, `billing_indicator`, `valid_from_date`, `valid_until_date`\n\n### Joins\n- `Invoices_1.customer_number` = `CustomerMaster_1.CustomerNumber`\n- `Invoices_1.sales_order_number` = `OrderHeader_1.OrderNumber`\n- `Invoices_1.invoice_number` = `PaymentReceipt_1.InvoiceNumber`\n- `OrderHeader_1.CustomerNumber` = `CustomerMaster_1.CustomerNumber`\n- `OrderHeader_1.BusinessUnit` = `BusinessUnit_1.BusinessUnit`\n\n## Output\nRespond EXCLUSIVELY via the structured output parser with:\n- `sql_query`: the corrected query as plain SQL, without markdown fences and without explanations\n- `fix_note`: one short German sentence describing what you changed"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1296,
+        2512
+      ],
+      "id": "2095a1ab-a4da-4c37-b239-f0e0bfacd713",
+      "name": "SQL Repair Agent",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "model": "gpt-4.1",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatAzureOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1264,
+        2704
+      ],
+      "id": "aa830aba-baf5-4a9a-b2f9-6d1e6f7bebe8",
+      "name": "Azure OpenAI Chat Model2",
+      "credentials": {
+        "azureOpenAiApi": {
+          "id": "kPePnZ3coz99N73c",
+          "name": "Azure Open AI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"sql_query\": {\n      \"type\": \"string\"\n    },\n    \"fix_note\": {\n      \"type\": \"string\"\n    }\n  },\n  \"required\": [\n    \"sql_query\"\n  ]\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1504,
+        2720
+      ],
+      "id": "82929bda-99af-4e81-b62a-b7a7e6060c61",
+      "name": "SQL Repair Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baut eine saubere Fehlerantwort, wenn keine gueltige Abfrage ausgefuehrt werden konnte.\n// Eingaenge:\n//   \"Query Blocked?\"   (true-Zweig)  -> Abfrage war nicht lesend / leer / mehrere Statements\n//   \"Retry Possible?\"  (false-Zweig) -> alle Versuche aufgebraucht\n//   \"SQL Repair Agent\" (Error-Output)\n//   \"AI Agent\"         (Error-Output)\n// Mode: Run Once for All Items\n\nconst j = $input.first()?.json ?? {};\n\nconst details = Array.isArray(j.attempts) ? j.attempts : [];\nconst lastSql = j.sql_query || (details.length ? details[details.length - 1].sql : '');\n\nlet reason = j.block_reason || j.error_message || j.error || j.message || 'Unbekannter Fehler';\nif (typeof reason !== 'string') {\n  reason = reason.message || reason.description || JSON.stringify(reason);\n}\n\nconst tried = details.length || j.attempt || 0;\n\nlet text;\nif (j.blocked) {\n  text = 'Die erzeugte Abfrage wurde blockiert: ' + reason;\n} else if (tried > 0) {\n  text = 'Die Datenbankabfrage ist nach ' + tried + ' Versuch' + (tried === 1 ? '' : 'en') + ' fehlgeschlagen.\\n\\n'\n       + 'Letzte Fehlermeldung des SQL Servers:\\n' + reason + '\\n\\n'\n       + 'Bitte formuliere die Frage anders oder grenze Zeitraum bzw. Kennzahl genauer ein.';\n} else {\n  text = 'Die Anfrage konnte nicht verarbeitet werden.\\n\\nFehler:\\n' + reason;\n}\n\nreturn [{\n  json: {\n    __sql_failed: true,\n    error_text: text,\n    error_message: reason,\n    sql_query: lastSql,\n    attempts: tried,\n    attempt_details: details\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2272,
+        2368
+      ],
+      "id": "b6a809f2-bd25-4521-9d7c-33bbf6bd54f9",
+      "name": "Build Error Response"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3008,
+        2032
+      ],
+      "id": "99fea273-44d7-4f77-a7f8-ce04e7a3e533",
+      "name": "Merge",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Code Node v7: Merged-Input vom Merge-Node + Aggregat-Erkennung + Fehlerpfad\n// Input[0] = AI Agent output (sql_query, response, visualization-Metadaten)\n// Input[1] = SQL-Rohzeilen ODER Fehler-Item aus \"Build Error Response\"\n// Mode: Run Once for All Items\n\nconst all = $input.all();\n\n// Agent-Item: hat einen \"output\"-Wrapper mit sql_query/response\nconst agentItem = all.find(i =>\n  i.json?.output && typeof i.json.output === 'object' &&\n  ('sql_query' in i.json.output || 'response' in i.json.output)\n);\nconst meta = agentItem?.json?.output || {};\n\n// Fehler-Item aus dem Fehlerpfad\nconst failItem = all.find(i => i.json?.__sql_failed === true);\n\n// Interpretation-Item aus dem Pandas+lokale-LLM-Zweig (nur bei Erfolg mit Daten vorhanden)\nconst interpItem = all.find(i => i.json?.__interpretation === true);\n\n// Zuletzt gebaute Query ermitteln (beruecksichtigt Reparaturversuche)\nfunction lastRequest() {\n  for (let r = 9; r >= 0; r--) {\n    try {\n      const items = $('Build SQL Request').all(0, r);\n      if (items && items.length) return items[0].json;\n    } catch (e) { /* dieser Lauf existiert nicht */ }\n  }\n  return null;\n}\nconst req = lastRequest();\nconst effectiveSql = failItem?.json?.sql_query || req?.sql_query || meta.sql_query || '';\nconst usedAttempts = req?.attempt || 0;\n\n// ---------- Fehlerpfad ----------\nif (failItem) {\n  // Agent-Antwort und Fehlertext zu einem Text zusammenfassen\n  const agentText = String(meta.response || '').trim();\n  const errText   = String(failItem.json.error_text || 'Die Abfrage ist fehlgeschlagen.').trim();\n  const combined  = [agentText, errText].filter(Boolean).join('\\n\\n');\n\n  return [{\n    json: {\n      sql_query: effectiveSql,\n      response: combined,\n      analysis: '',\n      attempts: failItem.json.attempts || usedAttempts,\n      error: {\n        message: failItem.json.error_message || '',\n        details: failItem.json.attempt_details || []\n      },\n      data: { headers: [], rows: [] },\n      visualization: { type: 'none', title: '', x_label: '', y_label: '', labels: [], values: [] }\n    }\n  }];\n}\n\n// ---------- Erfolgspfad ----------\nconst sqlItems = all.filter(i =>\n  i !== agentItem &&\n  !i.json?.__sql_failed &&\n  !i.json?.__interpretation &&\n  Object.keys(i.json || {}).length > 0\n);\n\nconst pad = n => String(n).padStart(2, '0');\nconst fmtTime = (raw, spanHours) => {\n  const d = new Date(raw);\n  if (Number.isNaN(d.getTime())) return String(raw);\n  if (spanHours <= 24)      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;\n  if (spanHours <= 30 * 24) return `${pad(d.getDate())}.${pad(d.getMonth()+1)}. ${pad(d.getHours())}:${pad(d.getMinutes())}`;\n  return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.${d.getFullYear()}`;\n};\n\nlet headers = [], rows = [];\nif (sqlItems.length > 0) {\n  headers = Object.keys(sqlItems[0].json);\n  rows = sqlItems.map(i => headers.map(h => i.json[h]));\n}\n\n// Query lief fehlerfrei, hat aber 0 Zeilen geliefert -> die vom Agenten VOR\n// der Ausfuehrung geschriebene response passt dann nicht zur Realitaet.\nconst noDataFound = rows.length === 0;\n\nconst viz = meta.visualization || { type: \"none\" };\nlet labels = [], values = [];\n\nif (rows.length > 0 && viz.type && viz.type !== \"none\") {\n\n  // SPEZIALFALL: Ein-Zeilen-Aggregat (z.B. SELECT MIN, MAX, AVG, SUM)\n  // -> Header werden Labels, Zeilenwerte werden Values\n  const isAggregateRow =\n    rows.length === 1 &&\n    headers.length >= 2 &&\n    rows[0].every(v => v != null && v !== '' && !Number.isNaN(Number(v)));\n\n  if (isAggregateRow) {\n    labels = headers.slice();\n    values = rows[0].map(v => Number(v));\n  } else {\n    // Normalfall: jede Zeile = ein Datenpunkt\n    let labelIdx = headers.findIndex(h => /datetime|zeit|time|date/i.test(h));\n    const isTimeAxis = labelIdx !== -1;\n    if (labelIdx === -1) labelIdx = 0;\n    let valueIdx = headers.findIndex(h => /value|wert|avg|average|sum|min|max|count|anzahl|percent|prozent/i.test(h));\n    if (valueIdx === -1) valueIdx = headers.length - 1;\n    if (valueIdx === labelIdx) valueIdx = 1;\n\n    let spanHours = 1;\n    if (isTimeAxis && rows.length > 1) {\n      const f = new Date(rows[0][labelIdx]), l = new Date(rows[rows.length-1][labelIdx]);\n      if (!Number.isNaN(f - l)) spanHours = (l - f) / 3600000;\n    }\n    for (const r of rows) {\n      const v = Number(r[valueIdx]);\n      if (Number.isNaN(v)) continue;\n      labels.push(isTimeAxis ? fmtTime(r[labelIdx], spanHours) : String(r[labelIdx]));\n      values.push(v);\n    }\n  }\n}\n\n// Lokale LLM-Interpretation nur verwenden, wenn sie tatsaechlich Text geliefert hat --\n// sonst bleibt es bei der vom Agenten vorab geschriebenen response (kein Bruch,\n// falls Pandas/Ollama nicht laufen oder das Modell nicht gepullt ist).\nconst hasInterpretation = !noDataFound && interpItem && String(interpItem.json.interpretation_text || '').trim().length > 0;\n\nconst output = {\n  sql_query: effectiveSql,\n  response: noDataFound\n    ? 'Fuer diese Anfrage wurden keine Daten gefunden. Bitte pruefe die Filterkriterien (z. B. Kunde, Zeitraum) oder formuliere die Frage anders.'\n    : (hasInterpretation ? interpItem.json.interpretation_text : (meta.response || \"\")),\n  analysis: hasInterpretation ? (interpItem.json.stats_text || '') : '',\n  attempts: usedAttempts,\n  data: {\n    headers,\n    rows: rows.map(r => r.map(c => c == null ? \"\" : String(c)))\n  },\n  visualization: {\n    type: noDataFound ? 'none' : (viz.type || \"none\"),\n    title: viz.title || \"\",\n    x_label: viz.x_label || \"\",\n    y_label: viz.y_label || \"\",\n    labels,\n    values\n  }\n};\n\nreturn [{ json: output }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3216,
+        2048
+      ],
+      "id": "7881db45-662c-4ff7-a01a-40b41f44e16a",
+      "name": "Merge Inputs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baut headers/rows aus den rohen SQL-Zeilen (Microsoft SQL, Erfolgszweig) und\n// sammelt Kontext fuer Pandas-Analyse + lokale LLM-Interpretation. \n// parallel zum bestehenden Merge-Zweig (Index 1) und ändert diesen nicht.\n// Mode: Run Once for All Items\n\nconst items = $input.all();\n\nlet headers = [], rows = [];\nif (items.length > 0) {\n  headers = Object.keys(items[0].json);\n  rows = items.map(i => headers.map(h => i.json[h]));\n}\n\nlet question = '';\ntry { question = $('Webhook').first().json.body.chatInput; } catch (e) { /* kein Webhook-Lauf */ }\nif (!question) {\n  try { question = $('When chat message received').first().json.chatInput; } catch (e) { /* kein Chat-Lauf */ }\n}\n\nlet meta = {};\ntry { meta = $('AI Agent').first().json.output || {}; } catch (e) { /* nicht verfuegbar */ }\n\nconst viz = meta.visualization || {};\n\nreturn [{\n  json: {\n    headers,\n    rows,\n    question: question || '',\n    sql_query: meta.sql_query || '',\n    y_label: viz.y_label || '',\n    title: viz.title || ''\n    //has_data: rows.length > 0\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        2544
+      ],
+      "id": "6bbd94d7-7078-4270-a85d-98f51a757e19",
+      "name": "Prepare Rows For Analysis"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Baut den Prompt für die lokale LLM-Interpretation aus Originalfrage,\n// SQL-Query, Pandas-Statistik-Text und einer gekappten Rohdatenvorschau.\n// Mode: Run Once for All Items\n\nconst MAX_PREVIEW_ROWS = 30;\n\nconst ctx = $('Prepare Rows For Analysis').first().json;\n// const statsText = String($json.analysisText || '').trim();\n\nconst previewRows = ctx.rows.slice(0, MAX_PREVIEW_ROWS);\nconst previewLines = [ctx.headers.join(' | '), ...previewRows.map(r => r.join(' | '))];\nconst truncatedNote = ctx.rows.length > MAX_PREVIEW_ROWS\n  ? `\\n... (${ctx.rows.length - MAX_PREVIEW_ROWS} weitere Zeile(n) nicht angezeigt)`\n  : '';\n\nconst promptText = [\n  '## Frage des Controllers',\n  ctx.question || '(nicht verfuegbar)',\n  '',\n  '## SQL-Ergebnis (Datensaetze)',\n  previewLines.join('\\n') + truncatedNote,\n  '',\n  'Interpretiere diese Zahlen fuer einen Controller auf Deutsch. Beziehe dich konkret auf die Datensaetze oben, nicht auf die SQL-Abfrage.'\n].join('\\n');\n\nreturn [{\n  json: {\n    prompt_text: promptText\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2384,
+        2544
+      ],
+      "id": "706b1b0c-af8b-4bb6-ad34-be88893c5682",
+      "name": "Build Interpretation Prompt"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt_text }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=Du beschreibst Ergebnisse einer Datenbankabfrage für einen Controller.\n\nDu erhältst:\n- die Frage des Benutzers,\n- das SQL-Ergebnis.\n\nREGELN\n1. Schreibe 1-2 Sätze. Nicht mehr.\n2. Verwende ausschliesslich Angaben aus dem Ergebnis.\n3. Nenne keine Zahlen. Die Zahlen stehen bereits in der Tabelle.\n4. Ein Vergleich ist nur erlaubt, wenn beide Werte im Ergebnis stehen.\n\nBEISPIEL\nFrage: Umsatz je Monat 2024\nErgebnis: Februar 137280.10, Maerz 19535.00, April 224777.99\nAntwort: Der Umsatz schwankt im Jahresverlauf deutlich. Den hoechsten Wert\nerreicht der April, den niedrigsten der Maerz.\n\n"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        2624,
+        2544
+      ],
+      "id": "bed11319-55bf-40c1-a0f7-bcb630637bd5",
+      "name": "Local LLM Interpretation",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Markiert das Ergebnis der lokalen LLM-Interpretation für Merge Inputs.\n// Bei Fehlschlag (Ollama nicht erreichbar, Modell nicht gepullt, leere Antwort)\n// bleibt interpretation_text leer -> Merge Inputs faellt automatisch auf die\n// urspruengliche Agenten-Antwort zurueck.\n// Mode: Run Once for All Items\n\nconst item = $input.first()?.json ?? {};\nconst text = String(item.text ?? item.response?.text ?? item.output ?? '').trim();\n\nlet statsText = '';\ntry { statsText = $('Build Interpretation Prompt').first().json.stats_text || ''; } catch (e) { /* nicht verfuegbar */ }\n\nreturn [{\n  json: {\n    __interpretation: true,\n    interpretation_text: text,\n    stats_text: statsText\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        2352
+      ],
+      "id": "75517167-094c-4563-8e78-6fc002ab2a61",
+      "name": "Package Interpretation"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3424,
+        2048
+      ],
+      "id": "48e6c0e8-9082-4171-882d-a7e1735a5b16",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "15d9db80-a3c5-4a0c-8019-8f41a2766bb4",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        144,
+        2000
+      ],
+      "id": "36bb79c2-e0c8-48c2-a068-4f5b84d66dab",
+      "name": "Webhook",
+      "webhookId": "15d9db80-a3c5-4a0c-8019-8f41a2766bb4",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q2n0Vw6iEMgJQYNb",
+          "name": "Super Agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "llama3.2:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        2688,
+        2672
+      ],
+      "id": "2b614271-2832-4584-929f-0d2efae02a91",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "xHuYe0MDGOs9IpBW",
+          "name": "Local Ollama service"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "If": {
+      "main": [
+        [],
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Build SQL Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build SQL Request": {
+      "main": [
+        [
+          {
+            "node": "Query Blocked?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Blocked?": {
+      "main": [
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SQL Guardrail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SQL Guardrail": {
+      "main": [
+        [
+          {
+            "node": "Microsoft SQL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Microsoft SQL": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Prepare Rows For Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle SQL Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle SQL Error": {
+      "main": [
+        [
+          {
+            "node": "Retry Possible?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Possible?": {
+      "main": [
+        [
+          {
+            "node": "SQL Repair Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SQL Repair Agent": {
+      "main": [
+        [
+          {
+            "node": "Build SQL Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Azure OpenAI Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SQL Repair Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SQL Repair Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "SQL Repair Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Response": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Merge Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Inputs": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Rows For Analysis": {
+      "main": [
+        [
+          {
+            "node": "Build Interpretation Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Interpretation Prompt": {
+      "main": [
+        [
+          {
+            "node": "Local LLM Interpretation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Local LLM Interpretation": {
+      "main": [
+        [
+          {
+            "node": "Package Interpretation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Package Interpretation": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Local LLM Interpretation",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1bb7fd4c2e210be147ee963abe1bddc52a690f4b408b9e26762bc7bf5c658c91"
+  }
+}
