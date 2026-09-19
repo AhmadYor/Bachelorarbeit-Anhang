@@ -1,0 +1,4 @@
+HOME=/root
+RECOLL_CONFDIR=/root/.recoll
+# Alle 15 Min inkrementell neu indexieren (mtime) + verschwundene Dateien purgen
+*/15 * * * * root recollindex -c /root/.recoll >>/var/log/recoll.log 2>&1
