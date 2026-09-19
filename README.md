@@ -12,6 +12,7 @@ Dieses Repository enthält die exportierten n8n-Workflows sowie das Docker-Compo
 | `docker-compose.yml` | Docker-Compose-Setup (n8n, Postgres, Ollama, Open WebUI, Recoll, QuickChart, Static-File-Server) |
 | `.env` | Umgebungsvariablen für `docker-compose.yml` (Platzhalterwerte, keine echten Zugangsdaten) |
 | `recoll/` | Recoll-Suchdienst (Dockerfile, Konfiguration, Cron-Job, Such-API) |
+| `OpenWebUI_Funktion` | Open-WebUI-Pipe-Funktion ("Super Agent"), verbindet den Chat mit dem n8n-Orchestrator-Webhook |
 
 ## Workflows importieren
 
@@ -54,3 +55,13 @@ docker compose --profile cpu up
 - **LDAP-Login (Open WebUI):** ist an den internen Active-Directory-Server des Unternehmens gebunden und funktioniert außerhalb dieses Netzwerks nicht. Der Container startet trotzdem normal, nur der Login-Versuch schlägt fehl.
 - **Geteilte Dateien (`./shared/...`):** Die referenzierten Ordner (Dateiablage für n8n, Recoll-Indexquelle, statische Dateien) sind nicht Teil dieses Repositories und werden beim ersten Start von Docker automatisch leer angelegt. Es gibt daher initial keine Beispieldateien zum Durchsuchen.
 - **`.env`:** enthält ausschließlich Platzhalterwerte, keine produktiven Zugangsdaten.
+
+## Open WebUI Funktion einrichten
+
+Die Datei `OpenWebUI_Funktion` ist eine Pipe-Funktion für Open WebUI, die den Chat an den n8n-Orchestrator-Workflow weiterleitet.
+
+1. Open WebUI öffnen (siehe unten)
+2. **Admin Panel → Functions → "+" (neue Funktion erstellen)**
+3. Inhalt von `OpenWebUI_Funktion` einfügen und speichern
+4. In den Valves der Funktion mindestens `N8N_WEBHOOK_URL` (Webhook-URL des importierten `Orchestrator_Agent`-Workflows) setzen, optional `N8N_API_KEY`
+5. Funktion aktivieren
