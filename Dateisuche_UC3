@@ -1,0 +1,192 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || {};\nconst question = body.chatInput || body.question || '';\n\n// Zeitpunkt/Datum im Format TT.MM.JJJJ, TT.MM.JJ, YYYY-MM-DD oder MM/DD/YYYY\n// (zuerst erkennen, damit Tag/Monat/Jahr unten nicht faelschlich als Auftragsnummer erkannt werden)\nconst dateMatch = question.match(/\\b(?:\\d{1,2}\\.\\d{1,2}\\.(?:\\d{4}|\\d{2})|\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}\\/\\d{1,2}\\/\\d{4})\\b/);\nconst zeitpunkt = dateMatch ? dateMatch[0] : null;\nconst questionOhneDatum = zeitpunkt ? question.replace(zeitpunkt, ' ') : question;\n\n// Auftragsnummer: beliebig lange Zahl, egal ob 6-, 7-, 8-stellig etc.\n// Bevorzugt eine Zahl die direkt bei \"Auftrag\"/\"Auftragsnummer\" steht,\n// sonst die erste laengere Zahl (>= 4 Stellen) in der Frage.\nconst explicitMatch = questionOhneDatum.match(/Auftrag(?:s?nummer)?\\s*(?:nr\\.?|nummer)?\\s*:?\\s*(\\d+)/i);\nconst genericMatch = questionOhneDatum.match(/\\b\\d{4,}\\b/);\nconst orderNumber = explicitMatch ? explicitMatch[1] : (genericMatch ? genericMatch[0] : null);\n\nlet searchQuery;\nif (orderNumber) {\n  // Auftragsnummer ist der Haupt-Suchbegriff, Datum grenzt zusaetzlich ein wenn genannt.\n  // -dir:Vertraege haelt Werkvertraege draussen: die enthalten dieselbe Projektnummer\n  // und das Wort Leistungsnachweis (z. B. in der Abnahme-Pruefliste).\n  const terms = ['-dir:Vertraege', 'Leistungsnachweis', orderNumber];\n  if (zeitpunkt) terms.push(zeitpunkt);\n  searchQuery = terms.join(' AND ');\n} else {\n  // Fallback: keine Auftragsnummer erkannt -> allgemeine Stichwortsuche\n  const stopwords = new Set([\n    'seit','wann','gilt','wie','was','wer','wo','warum','welche','welcher','welches',\n    'der','die','das','dem','den','des','ein','eine','einer','einem','einen','eines',\n    'und','oder','ist','sind','war','wurde','wird','hat','haben','hatte','hatten',\n    'fuer','fur','von','zu','mit','bei','an','auf','in','im','am','ab','bis','nach',\n    'nicht','auch','noch','schon','dann','wenn','aber','doch','nur','als','ob',\n    'kann','koennen','konnen','muss','muessen','mussen','soll','sollen','darf','duerfen','durfen',\n    'sich','es','er','sie','wir','ihr','dieser','diese','dieses','diesen','diesem',\n    'mir','mich','bitte','zeig','zeige','gib','finde','mal','mich'\n  ]);\n\n  const keywords = question\n    .replace(/[?!.,;:()[\\]]/g, '')\n    .split(/\\s+/)\n    .filter(w => w.length > 1 && !stopwords.has(w.toLowerCase()));\n\n  searchQuery = keywords.length > 0\n    ? '-dir:Vertraege AND Leistungsnachweis AND (' + keywords.join(' OR ') + ')'\n    : '-dir:Vertraege AND Leistungsnachweis';\n}\n\nreturn [{ json: { question, orderNumber, zeitpunkt, searchQuery } }];"
+      },
+      "id": "3c32ede1-dbc7-47f0-9963-5d5aa9299fd2",
+      "name": "Code Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "c233ac93-1117-4717-9dc5-6c0c9400d1db",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -160,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "0257d96b-7b2e-4cf2-8de3-12157d0d4722",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1168,
+        784
+      ],
+      "id": "7121103e-45f0-4745-8d07-845692ac2e27",
+      "name": "Webhook",
+      "webhookId": "0257d96b-7b2e-4cf2-8de3-12157d0d4722",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q2n0Vw6iEMgJQYNb",
+          "name": "Super Agent"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fa049c8e-64f2-4f78-9ca1-6a5765d9a5ff",
+              "leftValue": "={{ $json.body.chatInput }}",
+              "rightValue": "### Task:",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -992,
+        784
+      ],
+      "id": "bd6a3c21-82c7-4bb6-897e-c21d31bc6aaa",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "url": "http://recoll:8089/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.searchQuery }}"
+            },
+            {
+              "name": "n",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d0fac5df-074f-4d0b-826d-c2425fe3b908",
+      "name": "HTTP Recoll",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -560,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Alle Leistungsnachweis-Treffer fuer die gesuchte Auftragsnummer buendeln\nconst results = $json.results || [];\nconst orderNumber = $('Code Keywords').item.json.orderNumber;\n\n// n8n-Dateipfad: ./shared/MAR_KUNDENBETREUUNG gemountet als /data/shared/MAR_KUNDENBETREUUNG\nconst N8N_BASE = '/data/shared/MAR_KUNDENBETREUUNG/';\n\nconst fullPaths = results\n  .filter(r => (r.mtype || '').startsWith('application/'))  // Ordner-Treffer ausschliessen\n  .map(r => N8N_BASE + r.relpath);\n\n// Markdown-Liste (ein Pfad pro Zeile) im Feld \"response\", wie vom Super Agent erwartet\nconst response = fullPaths.length > 0\n  ? fullPaths.map(p => '- ' + p).join('\\n')\n  : 'Keine Leistungsnachweise gefunden' + (orderNumber ? ' fuer Auftragsnummer ' + orderNumber : '') + '.';\n\nreturn [{ json: { response } }];"
+      },
+      "id": "41ef7352-0dfa-4de7-a759-5963194bec92",
+      "name": "Code prep",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -352,
+        800
+      ]
+    }
+  ],
+  "connections": {
+    "Code Keywords": {
+      "main": [
+        [
+          {
+            "node": "HTTP Recoll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Code Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Recoll": {
+      "main": [
+        [
+          {
+            "node": "Code prep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code prep": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1bb7fd4c2e210be147ee963abe1bddc52a690f4b408b9e26762bc7bf5c658c91"
+  }
+}
