@@ -1,6 +1,6 @@
 # Bachelorarbeit-Anhang
 
-Dieses Repository enthält die exportierten n8n-Workflows, das Docker-Compose-Setup sowie  die Open-WebUI-Funktion zur Bachelorarbeit.
+Dieses Repository enthält die exportierten n8n-Workflows, das Docker-Compose-Setup, die Recoll-Such-API sowie die Open-WebUI-Funktion zur Bachelorarbeit.
 
 ## Inhalt
 
@@ -65,3 +65,24 @@ Die Datei `OpenWebUI_Funktion` ist eine Pipe-Funktion für Open WebUI, die den C
 3. Inhalt von `OpenWebUI_Funktion` einfügen und speichern
 4. In den Valves der Funktion mindestens `N8N_WEBHOOK_URL` (Webhook-URL des importierten `Orchestrator_Agent`-Workflows) setzen, optional `N8N_API_KEY`
 5. Funktion aktivieren
+
+## Recoll Such-API
+
+`recoll/` stellt eine Volltextsuche (Xapian) über den in `docker-compose.yml` gemounteten Datei-Share bereit. n8n nutzt diese API in der Dateisuche (`Dateisuche_UC3`), um Dateien zu finden.
+
+Endpunkte (Basis: `http://localhost:8089`):
+
+| Endpunkt | Beschreibung |
+| --- | --- |
+| `GET /health` | Health-Check |
+| `GET /search?q=...&n=10` | Volltextsuche, liefert Treffer mit Pfad, Titel, Score und Snippet |
+| `GET /pages?relpath=...` | Seitenzahl und SHA-256-Hash einer PDF-Datei |
+| `GET /render?relpath=...&first=1&last=5&dpi=200` | Rendert einen Seitenbereich einer PDF als Base64-JPEGs (für das Vision-Modell) |
+
+Beispiel:
+
+```bash
+curl "http://localhost:8089/search?q=Rechnung&n=5"
+```
+
+Indexiert wird der unter `./shared/MAR_KUNDENBETREUUNG` gemountete Ordner – wie unter "Einschränkungen" beschrieben, ist dieser in diesem Repository nicht enthalten und wird initial leer angelegt.
